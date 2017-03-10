@@ -3,10 +3,13 @@ from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
 
-filename = r'160119-3_nulevaya.tiff'
+filename = r'before.tif'
+lines_distance = 40
+lines_distance_variation = 10
+max_line_interruption_distance = 7
 
-lower_trashhold = 60  # порог, ниже которого локальный экстремум считаем чёрной полосой
-upper_trashhold = 200  # порог, выше которого локальный экстремум считаем белой полосой
+lower_trashhold = 150  # порог, ниже которого локальный экстремум считаем чёрной полосой
+upper_trashhold = 50  # порог, выше которого локальный экстремум считаем белой полосой
 original_folder = r'original'
 result_folder = r'result'
 
@@ -16,7 +19,31 @@ def main():
 
     phases = calculate_phases(filename, black_lines, white_lines)
 
-    save_tif_image(phases, filename + '_phases.tif', 10)
+    save_tif_image(phases, filename.replace('.tif', '_phase.tif'), 300)
+    save_phases(phases, filename.replace('.tif', '_phase.txt'))
+
+   # phases2 = load_phases(result_folder + '\\')
+
+
+def save_phases(data, filename):
+    print('saving', result_folder + '\\' + filename)
+    height = len(data)
+    width = len(data[0])
+    with open(filename, 'w') as f:
+        for y in range(height):
+            for x in range(width):
+                val = data[y][x]
+                f.write(str(val) + '\t')
+            f.write('\n')
+
+
+def load_phases(filename):
+    data = []
+    with open(filename, 'r') as f:
+        for line in f:
+            row = [int(x) for x in line.strip().split()]
+            data.append(row)
+    return data
 
 
 def save_tif_image(data, filename, scale=255):
@@ -64,8 +91,8 @@ def trace_interference_lines_on_image(image_filename):
     all_white_base_points = []
     for x in range(input_image.width):
         data_slice = [data_2d[y][x] for y in range(len(data_2d))]
-        black_base_points = get_base_points(data_slice, 7, lambda x: x < lower_trashhold)
-        white_base_points = get_base_points(data_slice, 15, lambda x: x > upper_trashhold)  
+        black_base_points = get_base_points(data_slice, 5, True, lambda x: x < lower_trashhold)
+        white_base_points = get_base_points(data_slice, 35, False, lambda x: x > upper_trashhold)
         all_black_base_points.append(black_base_points)
         all_white_base_points.append(white_base_points)
 
@@ -156,14 +183,13 @@ def calculate_phases(image_filename, black_lines, white_lines):
             else:
                 raise Exception()
 
-    save_tif_image(phase, image_filename.replace('.tif', '_phase.tif'), 120)
-
     return phase
 
 
-def get_base_points(data, number_of_approximation_points, trash_filter=None):
+def get_base_points(data, number_of_approximation_points, search_min, trash_filter=None):
     # приближаем значения в соседних N точках наилучшими параболами
     # и считаем хи квадрат отлонений
+    # search_min - булево значение, True - ищем минимум, значит интересны только положительные a
     # trash_filter - функция для фильтрации значений минимумов/максимумов
     N = number_of_approximation_points//2
     khi2_for_y = [None]*N
@@ -171,19 +197,42 @@ def get_base_points(data, number_of_approximation_points, trash_filter=None):
         A = 2*sum(i**4 for i in range(1, N+1))
         B = 2*sum((data[y]-data[y+i])*(i**2) for i in range(-N, N+1))
         C = sum((data[y+i]-data[y])**2 for i in range(-N, N+1))
-        a_optimal = -B/2/A
+        a_optimal = -B/(2*A)
         khi2 = A*a_optimal**2 + B*a_optimal + C
         #print(y, data[y], khi2, A, B, C, a_optimal, sep='\t')  # DEBUG
         khi2_for_y.append(khi2)
 
-    base_points = []
-    for y in range(N+2, len(data)-N-3):
+    # ищем первую базовую линию
+    y0 = N+2
+    while y0 < len(data)-N-3:
+        y = y0
         if (khi2_for_y[y] <= khi2_for_y[y-1] and
                 khi2_for_y[y] <= khi2_for_y[y+1] and
                 khi2_for_y[y] <= khi2_for_y[y-2] and
                 khi2_for_y[y] <= khi2_for_y[y+2]):
             if not trash_filter or trash_filter(data[y]):
-                base_points.append(y)
+                A = 2 * sum(i ** 4 for i in range(1, N + 1))
+                B = 2 * sum((data[y] - data[y + i]) * (i ** 2) for i in range(-N, N + 1))
+                a_optimal = -B/(2*A)
+                if search_min and a_optimal > 0 or not search_min and a_optimal < 0:
+                    break
+
+    base_points = []
+    while y0 < len(data)-N-3:
+        for y in (y0 + (1-2*(i%2))*(i+1)//2 for i in range(2*lines_distance_variation+1)):  # 0, -1, 1, -2, 2, -3, 3, -4, 4, -5
+            if (khi2_for_y[y] <= khi2_for_y[y-1] and
+                    khi2_for_y[y] <= khi2_for_y[y+1] and
+                    khi2_for_y[y] <= khi2_for_y[y-2] and
+                    khi2_for_y[y] <= khi2_for_y[y+2]):
+                if not trash_filter or trash_filter(data[y]):
+                    A = 2 * sum(i ** 4 for i in range(1, N + 1))
+                    B = 2 * sum((data[y] - data[y + i]) * (i ** 2) for i in range(-N, N + 1))
+                    a_optimal = -B/(2*A)
+                    if search_min and a_optimal > 0 or not search_min and a_optimal < 0:
+                        base_points.append(y)
+                        y0 = y
+                        break
+        y0 += lines_distance
     return base_points
 
 
@@ -201,8 +250,7 @@ def trace_line(line, all_base_points, lower_border_line = None, upper_border_lin
     old_x = width-1
     old_y = line[old_x]
     for x in range(width-2, -1, -1):
-        for dy in [0, +1, -1, +2, -2, +3, -3, +4, -4, +5, -5, +6, -6, +7, -7]:#,
-                  # +8, -8, +9, -9, +10, -10, +11, -11, +12, -12, +13, -13, +14, -14, +15, -15]:
+        for dy in ((1-2*(i%2))*(i+1)//2 for i in range(max_line_interruption_distance*2+1)):  # 0, +1, -1, +2, -2, +3, -3, +4, -4, +5, -5, +6, -6, +7, -7
             y = old_y + dy
             # проверяем выход за пограничные линии
             if lower_border_line and y <= lower_border_line[x] or upper_border_line and y >= upper_border_line[x]:
